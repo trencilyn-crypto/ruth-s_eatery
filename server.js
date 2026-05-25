@@ -91,14 +91,22 @@ app.get("/api/health", async (req, res) => {
 });
 
 // --- SITE DATA API (GET) ---
+// Reconstructs JSON from relational tables so Workbench changes show on the web
 app.get("/api/data", async (req, res) => {
   try {
-    const [rows] = await pool.query("SELECT config_json FROM site_configs WHERE id = 1");
-    if (rows.length > 0) {
-      res.json(JSON.parse(rows[0].config_json));
-    } else {
-      res.status(404).json({ message: "No data found" });
-    }
+    const [configRows] = await pool.query("SELECT config_json FROM site_configs WHERE id = 1");
+    let data = configRows.length > 0 ? JSON.parse(configRows[0].config_json) : {};
+
+    // Overwrite dynamic parts with fresh data from relational tables
+    const [users] = await pool.query("SELECT * FROM users");
+    const [orders] = await pool.query("SELECT * FROM orders");
+    const [bookings] = await pool.query("SELECT * FROM bookings");
+
+    data.users = users;
+    data.orders = orders;
+    data.bookings = bookings;
+
+    res.json(data);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
