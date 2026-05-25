@@ -6,8 +6,8 @@
   "main": "server.js",
 
   "scripts": {
-    "dev": "vite",
-    "build": "vite build",
+    "dev": "vite --host",
+    "build": "npx vite build",
     "preview": "vite preview",
     "start": "node server.js"
   },
@@ -38,6 +38,7 @@
   },
 
   "engines": {
-    "node": "20.x"
+    "node": "20.x",
+    "npm": "10.x"
   }
 }
