@@ -1,41 +1,45 @@
 /**
- * PRODUCTION NODE.JS SERVER FOR RENDER + AIVEN
- * 1. Install dependencies: npm install express cors mysql2 dotenv body-parser
+ * PRODUCTION NODE.JS SERVER FOR RENDER + AIVEN (ES Module Version)
+ * 1. Ensure package.json has "type": "module"
  * 2. Set your AIVEN_URL in Render Environment Variables
  */
 
-const express = require('express');
-const mysql = require('mysql2');
-const cors = require('cors');
-const bodyParser = require('body-parser');
-require('dotenv').config();
+import express from 'express';
+import mysql from 'mysql2/promise'; // Use the promise-based version directly
+import cors from 'cors';
+import 'dotenv/config';
 
 const app = express();
 app.use(cors());
-app.use(bodyParser.json({ limit: '50mb' }));
+// Express has built-in body parsing now, so body-parser is no longer strictly needed
+app.use(express.json({ limit: '50mb' }));
 
 // Aiven MySQL Connection
 let db;
 if (process.env.AIVEN_URL) {
-  const pool = mysql.createPool(process.env.AIVEN_URL);
-  db = pool.promise();
+  // Using mysql2/promise version means no need to call .promise() manually
+  db = mysql.createPool(process.env.AIVEN_URL);
 } else {
   console.warn("WARNING: AIVEN_URL not set. Backend will not persist to cloud.");
   // Mock db object to prevent crashes
   db = {
     query: () => Promise.resolve([{ config_json: "{}" }]),
-    promise: () => db
   };
 }
 
-// Initialize Database Table if it doesn't exist
+// Initialize Database Table
 const initDb = async () => {
-  await db.query(`
-    CREATE TABLE IF NOT EXISTS site_configs (
-      id INT PRIMARY KEY,
-      config_json LONGTEXT
-    )
-  `);
+  try {
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS site_configs (
+        id INT PRIMARY KEY,
+        config_json LONGTEXT
+      )
+    `);
+    console.log("Database initialized.");
+  } catch (err) {
+    console.error("Database initialization failed:", err.message);
+  }
 };
 initDb();
 
