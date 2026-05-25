@@ -1,30 +1,29 @@
 /**
- * PRODUCTION NODE.JS SERVER FOR RENDER + AIVEN (ES Module Version)
- * 1. Ensure package.json has "type": "module"
- * 2. Set your AIVEN_URL in Render Environment Variables
+ * PRODUCTION NODE.JS SERVER FOR RENDER + AIVEN
  */
 
 import express from 'express';
-import mysql from 'mysql2/promise'; // Use the promise-based version directly
+import mysql from 'mysql2/promise';
 import cors from 'cors';
 import 'dotenv/config';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+// 1. Setup __dirname for ES Modules
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const app = express();
 app.use(cors());
-// Express has built-in body parsing now, so body-parser is no longer strictly needed
 app.use(express.json({ limit: '50mb' }));
 
 // Aiven MySQL Connection
 let db;
 if (process.env.AIVEN_URL) {
-  // Using mysql2/promise version means no need to call .promise() manually
   db = mysql.createPool(process.env.AIVEN_URL);
 } else {
   console.warn("WARNING: AIVEN_URL not set. Backend will not persist to cloud.");
-  // Mock db object to prevent crashes
-  db = {
-    query: () => Promise.resolve([{ config_json: "{}" }]),
-  };
+  db = { query: () => Promise.resolve([{ config_json: "{}" }]) };
 }
 
 // Initialize Database Table
@@ -36,51 +35,41 @@ const initDb = async () => {
         config_json LONGTEXT
       )
     `);
-    console.log("Database initialized.");
   } catch (err) {
-    console.error("Database initialization failed:", err.message);
+    console.error("DB Init Error:", err.message);
   }
 };
 initDb();
 
-// GET Site Data from Aiven
+// --- API ROUTES ---
 app.get('/api/data', async (req, res) => {
   try {
     const [rows] = await db.query('SELECT config_json FROM site_configs WHERE id = 1');
-    if (rows.length > 0) {
-      res.json(JSON.parse(rows[0].config_json));
-    } else {
-      res.status(404).json({ message: "No data found" });
-    }
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
+    if (rows.length > 0) res.json(JSON.parse(rows[0].config_json));
+    else res.status(404).json({ message: "No data found" });
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// POST Site Data to Aiven
 app.post('/api/data', async (req, res) => {
   try {
     const config = JSON.stringify(req.body);
-    // Upsert logic: insert or update the single config row
     await db.query(`
-      INSERT INTO site_configs (id, config_json) 
-      VALUES (1, ?) 
+      INSERT INTO site_configs (id, config_json) VALUES (1, ?) 
       ON DUPLICATE KEY UPDATE config_json = ?
     `, [config, config]);
     res.json({ success: true });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// Health Check for Render & Aiven
-app.get('/api/health', async (req, res) => {
-  try {
-    await db.query('SELECT 1');
-    res.json({ status: 'connected', database: 'aiven_mysql', timestamp: new Date() });
-  } catch (err) {
-    res.status(500).json({ status: 'error', message: err.message });
-  }
+app.get('/api/health', (req, res) => res.json({ status: 'ok' }));
+
+// --- SERVE FRONTEND ---
+// 2. Tell Express to serve the static files from the "dist" folder
+app.use(express.static(path.join(__dirname, 'dist')));
+
+// 3. Handle any other requests by sending the index.html file (SPA routing)
+app.get('*', (req, res) => {
+  res.sendFile(path.join(__dirname, 'dist', 'index.html'));
 });
 
 const PORT = process.env.PORT || 3001;
