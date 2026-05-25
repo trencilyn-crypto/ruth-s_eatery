@@ -4,17 +4,20 @@ import path from "path";
 import { fileURLToPath } from "url";
 import dotenv from "dotenv";
 import cors from "cors";
+import fs from "fs";
 
 dotenv.config();
 
 const app = express();
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 app.use(cors());
-app.use(express.json({ limit: '50mb' }));
+app.use(express.json({ limit: "50mb" }));
 
-// Database pool configuration for Aiven
+// ================= DATABASE =================
+
 const pool = mysql.createPool({
   host: process.env.MYSQL_HOST,
   user: process.env.MYSQL_USER,
@@ -22,17 +25,17 @@ const pool = mysql.createPool({
   database: process.env.MYSQL_DATABASE,
   port: Number(process.env.MYSQL_PORT) || 3306,
   ssl: {
-    rejectUnauthorized: false
+    rejectUnauthorized: false,
   },
   waitForConnections: true,
   connectionLimit: 10,
-  queueLimit: 0
+  queueLimit: 0,
 });
 
-// Initialize Database Tables
+// ================= INIT DATABASE =================
+
 const initDb = async () => {
   try {
-    // Main state table
     await pool.query(`
       CREATE TABLE IF NOT EXISTS site_configs (
         id INT PRIMARY KEY,
@@ -40,7 +43,6 @@ const initDb = async () => {
       )
     `);
 
-    // Relational tables for Workbench visibility
     await pool.query(`
       CREATE TABLE IF NOT EXISTS users (
         email VARCHAR(255) PRIMARY KEY,
@@ -73,31 +75,45 @@ const initDb = async () => {
         created_at VARCHAR(100)
       )
     `);
-    console.log("Database tables initialized successfully.");
+
+    console.log("✅ Database tables initialized");
   } catch (err) {
-    console.error("Database initialization error:", err.message);
+    console.error("❌ Database initialization error:", err.message);
   }
 };
+
 initDb();
 
-// --- RENDER & AIVEN HEALTH API ---
+// ================= HEALTH CHECK =================
+
 app.get("/api/health", async (req, res) => {
   try {
     await pool.query("SELECT 1");
-    res.json({ status: "connected", database: "aiven_mysql", timestamp: new Date() });
+    res.json({
+      status: "connected",
+      database: "aiven_mysql",
+      timestamp: new Date(),
+    });
   } catch (err) {
-    res.status(500).json({ status: "error", message: err.message });
+    res.status(500).json({
+      status: "error",
+      message: err.message,
+    });
   }
 });
 
-// --- SITE DATA API (GET) ---
-// Reconstructs JSON from relational tables so Workbench changes show on the web
+// ================= GET DATA =================
+
 app.get("/api/data", async (req, res) => {
   try {
-    const [configRows] = await pool.query("SELECT config_json FROM site_configs WHERE id = 1");
-    let data = configRows.length > 0 ? JSON.parse(configRows[0].config_json) : {};
+    const [configRows] = await pool.query(
+      "SELECT config_json FROM site_configs WHERE id = 1"
+    );
 
-    // Overwrite dynamic parts with fresh data from relational tables
+    let data = configRows.length > 0
+      ? JSON.parse(configRows[0].config_json)
+      : {};
+
     const [users] = await pool.query("SELECT * FROM users");
     const [orders] = await pool.query("SELECT * FROM orders");
     const [bookings] = await pool.query("SELECT * FROM bookings");
@@ -108,69 +124,141 @@ app.get("/api/data", async (req, res) => {
 
     res.json(data);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({
+      error: err.message,
+    });
   }
 });
 
-// --- SITE DATA API (POST / SYNC) ---
+// ================= SAVE DATA =================
+
 app.post("/api/data", async (req, res) => {
   try {
     const data = req.body;
+
     const configJson = JSON.stringify(data);
 
-    // 1. Save entire state for Frontend
-    await pool.query(`
-      INSERT INTO site_configs (id, config_json) 
-      VALUES (1, ?) 
+    await pool.query(
+      `
+      INSERT INTO site_configs (id, config_json)
+      VALUES (1, ?)
       ON DUPLICATE KEY UPDATE config_json = ?
-    `, [configJson, configJson]);
+    `,
+      [configJson, configJson]
+    );
 
-    // 2. Sync Users
-    if (data.users && Array.isArray(data.users)) {
+    // USERS
+    if (Array.isArray(data.users)) {
       for (const user of data.users) {
-        await pool.query(`
+        await pool.query(
+          `
           INSERT INTO users (email, name, role, registered_at)
           VALUES (?, ?, ?, ?)
-          ON DUPLICATE KEY UPDATE name = ?, role = ?
-        `, [user.email, user.name, user.role, user.registeredAt, user.name, user.role]);
+          ON DUPLICATE KEY UPDATE
+          name = VALUES(name),
+          role = VALUES(role)
+        `,
+          [
+            user.email,
+            user.name,
+            user.role,
+            user.registeredAt,
+          ]
+        );
       }
     }
 
-    // 3. Sync Orders
-    if (data.orders && Array.isArray(data.orders)) {
+    // ORDERS
+    if (Array.isArray(data.orders)) {
       for (const order of data.orders) {
-        await pool.query(`
-          INSERT INTO orders (id, customer_name, phone, total, status, type, created_at)
+        await pool.query(
+          `
+          INSERT INTO orders (
+            id,
+            customer_name,
+            phone,
+            total,
+            status,
+            type,
+            created_at
+          )
           VALUES (?, ?, ?, ?, ?, ?, ?)
-          ON DUPLICATE KEY UPDATE status = ?
-        `, [order.id, order.customerName, order.phone, order.total, order.status, order.type, order.createdAt, order.status]);
+          ON DUPLICATE KEY UPDATE
+          status = VALUES(status)
+        `,
+          [
+            order.id,
+            order.customerName,
+            order.phone,
+            order.total,
+            order.status,
+            order.type,
+            order.createdAt,
+          ]
+        );
       }
     }
 
-    // 4. Sync Bookings
-    if (data.bookings && Array.isArray(data.bookings)) {
-      for (const b of data.bookings) {
-        await pool.query(`
-          INSERT INTO bookings (id, name, guests, date, time, status, created_at)
+    // BOOKINGS
+    if (Array.isArray(data.bookings)) {
+      for (const booking of data.bookings) {
+        await pool.query(
+          `
+          INSERT INTO bookings (
+            id,
+            name,
+            guests,
+            date,
+            time,
+            status,
+            created_at
+          )
           VALUES (?, ?, ?, ?, ?, ?, ?)
-          ON DUPLICATE KEY UPDATE status = ?
-        `, [b.id, b.name, b.guests, b.date, b.time, b.status, b.createdAt, b.status]);
+          ON DUPLICATE KEY UPDATE
+          status = VALUES(status)
+        `,
+          [
+            booking.id,
+            booking.name,
+            booking.guests,
+            booking.date,
+            booking.time,
+            booking.status,
+            booking.createdAt,
+          ]
+        );
       }
     }
 
-    res.json({ success: true, message: "Sync with Aiven complete" });
+    res.json({
+      success: true,
+      message: "✅ Sync complete",
+    });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({
+      error: err.message,
+    });
   }
 });
 
-// Serve static assets from the React build
-app.use(express.static(path.join(__dirname, "dist")));
+// ================= STATIC FILES =================
 
-// React fallback
-app.get("*", (req, res) => {
-  res.sendFile(path.join(__dirname, "dist", "index.html"));
-});
+const distPath = path.join(__dirname, "dist");
+
+if (fs.existsSync(distPath)) {
+  app.use(express.static(distPath));
+
+  app.get("*", (req, res) => {
+    res.sendFile(path.join(distPath, "index.html"));
+  });
+} else {
+  console.log("⚠️ dist folder not found");
+}
+
+// ================= START SERVER =================
 
 const PORT = process.env.PORT || 3001;
-app.listen(PORT, () => console.log(`Ruthy Backend Server running on port ${PORT}`));
+
+app.listen(PORT, () => {
+  console.log(`🚀 Server running on port ${PORT}`);
+});
